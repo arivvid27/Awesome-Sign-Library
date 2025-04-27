@@ -194,6 +194,8 @@ ASL signs that are similar in appearance may be confused. For example:
 - M and N signs are very similar
 - E and A both involve a closed fist with slight differences
 - R and U can look similar from certain angles
+- Angles matter for detection
+- The model is rushed, and requires far more training than two days
 
 Practice holding signs clearly and adjust your hand position if a sign is consistently misinterpreted.
 
