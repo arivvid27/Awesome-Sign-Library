@@ -14,49 +14,66 @@ import base64
 
 app = Flask(__name__)
 
-# Add these variables at the top of the file
-hand_size_calibration = 1.0  # Default calibration value
+hand_size_calibration = 1.0
 is_calibrating = False
 calibration_frames = []
 
 def calibrate_hand_size(hand_landmarks):
     """
-    Calibrate for hand size by measuring average finger lengths
+    Enhanced calibration for hand size by measuring multiple finger dimensions
+    and palm width to get a more accurate hand size estimate.
     """
     global hand_size_calibration, calibration_frames, is_calibrating
     
-    # Extract key points
+
+    measurements = []
+    
     wrist = hand_landmarks.landmark[0]
+    for tip_idx in [4, 8, 12, 16, 20]:  # Thumb, Index, Middle, Ring, Pinky tips
+        tip = hand_landmarks.landmark[tip_idx]
+        distance = ((tip.x - wrist.x)**2 + 
+                    (tip.y - wrist.y)**2 + 
+                    (tip.z - wrist.z)**2)**0.5
+        measurements.append(distance)
+    
+    index_mcp = hand_landmarks.landmark[5]
+    pinky_mcp = hand_landmarks.landmark[17]
+    palm_width = ((pinky_mcp.x - index_mcp.x)**2 + 
+                  (pinky_mcp.y - index_mcp.y)**2 + 
+                  (pinky_mcp.z - index_mcp.z)**2)**0.5
+    measurements.append(palm_width)
+    
     middle_mcp = hand_landmarks.landmark[9]
     middle_tip = hand_landmarks.landmark[12]
+    middle_length = ((middle_tip.x - middle_mcp.x)**2 + 
+                     (middle_tip.y - middle_mcp.y)**2 + 
+                     (middle_tip.z - middle_mcp.z)**2)**0.5
+    measurements.append(middle_length)
     
-    # Measure hand size (distance from wrist to middle finger tip)
-    wrist_to_middle_tip = ((middle_tip.x - wrist.x)**2 + 
-                           (middle_tip.y - wrist.y)**2 + 
-                           (middle_tip.z - wrist.z)**2)**0.5
+    frame_avg = sum(measurements) / len(measurements)
+    calibration_frames.append(frame_avg)
     
-    # Add to calibration frames
-    calibration_frames.append(wrist_to_middle_tip)
-    
-    # If we have enough frames, compute the average
     if len(calibration_frames) >= 30:
-        # Remove outliers (values too far from median)
-        median_value = np.median(calibration_frames)
+        sorted_frames = sorted(calibration_frames)
+        q1_idx = len(sorted_frames) // 4
+        q3_idx = q1_idx * 3
+        q1 = sorted_frames[q1_idx]
+        q3 = sorted_frames[q3_idx]
+        iqr = q3 - q1
+        lower_bound = q1 - 1.5 * iqr
+        upper_bound = q3 + 1.5 * iqr
+        
         filtered_values = [v for v in calibration_frames 
-                          if abs(v - median_value) < 0.1]
+                          if lower_bound <= v <= upper_bound]
         
         if filtered_values:
-            # Set calibration value based on average
             hand_size_calibration = sum(filtered_values) / len(filtered_values)
-            print(f"Hand size calibration complete: {hand_size_calibration:.4f}")
+            print(f"Enhanced hand size calibration complete: {hand_size_calibration:.4f}")
         
-        # Reset calibration state
         is_calibrating = False
         calibration_frames = []
     
     return len(calibration_frames) / 30.0  # Return progress (0.0-1.0)
-
-# Add a new endpoint for the calibration
 @app.route('/calibrate', methods=['POST'])
 def start_calibration():
     """Start the hand size calibration process"""
@@ -66,13 +83,10 @@ def start_calibration():
     return jsonify({"status": "calibration_started"})
 
 
-# Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2, min_detection_confidence=0.7)
 
-# Load the ASL recognition model (we'll assume you've trained it)
-# This is a placeholder - you'll need to train and save your own model
 try:
     asl_model = tf.keras.models.load_model('models/letter_model.h5')
     model_loaded = True
@@ -80,7 +94,6 @@ except:
     model_loaded = False
     print("Warning: ASL model not found. App will run in demo mode.")
 
-# Configure Google Gemini API
 try:
     GOOGLE_API_KEY = "AIzaSyCfb1AlLLYl9V3gEODD1JKwsuLTqQi0E3Q"
     genai.configure(api_key=GOOGLE_API_KEY)
@@ -95,7 +108,6 @@ except:
     gemini_available = False
     print("Warning: Google Gemini API configuration failed. Word segmentation will be limited.")
 
-# Global variables
 detected_letters = []
 current_mode = "letter"  # Default mode
 last_detection_time = time.time()
@@ -103,18 +115,14 @@ detection_cooldown = 1.0  # seconds between detections
 speech_thread = None
 last_spoken_text = ""
 
-# ASL alphabet for recognition
 asl_classes = list(string.ascii_uppercase) + ["SPACE", "DELETE"]
 
 def demo_predict_asl(hand_landmarks):
     """
     Use deterministic hand landmark-based detection instead of random guessing
     """
-    # Use our landmark-based detection instead of random selection
     detected_letter = detect_asl_by_hand_landmarks(hand_landmarks)
     
-    # Only return the letter if we're confident in the detection
-    # Otherwise return None (no detection)
     return detected_letter
 
 def predict_asl(frame, hand_landmarks):
@@ -124,16 +132,11 @@ def predict_asl(frame, hand_landmarks):
     if not model_loaded:
         return demo_predict_asl(hand_landmarks)
     
-    # Extract hand features from landmarks
-    # This is a simplified example - you would need to process landmarks properly
     features = []
     for landmark in hand_landmarks.landmark:
         features.extend([landmark.x, landmark.y, landmark.z])
-    
-    # Normalize features
     features = np.array(features).reshape(1, -1)
     
-    # Make prediction
     prediction = asl_model.predict(features)
     predicted_class = np.argmax(prediction)
     
@@ -179,7 +182,6 @@ def text_to_speech(text):
         speech_file = "static/temp_speech.mp3"
         tts.save(speech_file)
         
-        # Use playsound to play the audio
         os.system(f"mpg123 {speech_file}")
     except Exception as e:
         print(f"TTS Error: {e}")
@@ -203,13 +205,10 @@ def process_frame(frame):
     """
     global detected_letters, last_detection_time
     
-    # Convert BGR to RGB
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     
-    # Process the frame with MediaPipe
     results = hands.process(rgb_frame)
     
-    # Draw detection info on the frame
     h, w, _ = frame.shape
     cv2.rectangle(frame, (0, h-50), (w, h), (0, 0, 0), -1)
     cv2.putText(frame, "Current text: " + ''.join(detected_letters[-20:]), 
@@ -222,19 +221,16 @@ def process_frame(frame):
             mp_drawing.draw_landmarks(
                 frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
             
-            # Add finger status visualization
             visualize_finger_status(frame, hand_landmarks)
             
             # Only detect a new sign after cooldown period
             current_time = time.time()
             if current_time - last_detection_time >= detection_cooldown:
-                # Try to detect the ASL sign
                 if model_loaded:
                     predicted_letter = predict_asl(rgb_frame, hand_landmarks)
                 else:
                     predicted_letter = detect_asl_by_hand_landmarks(hand_landmarks)
                 
-                # Display detection attempt
                 if predicted_letter is None:
                     cv2.putText(frame, "Detecting...", (10, 30), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
@@ -273,7 +269,6 @@ def visualize_finger_status(frame, hand_landmarks):
     """
     h, w, _ = frame.shape
     
-    # Draw fingertip markers
     for i, landmark in enumerate(hand_landmarks.landmark):
         x, y = int(landmark.x * w), int(landmark.y * h)
         
@@ -281,47 +276,38 @@ def visualize_finger_status(frame, hand_landmarks):
         if i in [4, 8, 12, 16, 20]:
             cv2.circle(frame, (x, y), 8, (0, 255, 255), -1)
             
-            # Label the fingertips
             finger_names = {4: "T", 8: "I", 12: "M", 16: "R", 20: "P"}
             cv2.putText(frame, finger_names.get(i, ""), (x+10, y), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
         
-        # Other joints
         else:
             cv2.circle(frame, (x, y), 5, (0, 128, 255), -1)
     
-    # Draw connecting lines between specific landmarks for better visualization
-    # Connect thumb tip to index base (useful for some letter signs)
     thumb_tip = hand_landmarks.landmark[4]
     index_base = hand_landmarks.landmark[5]
     
     thumb_tip_x, thumb_tip_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
     index_base_x, index_base_y = int(index_base.x * w), int(index_base.y * h)
     
-    # Check if thumb is close to index base (which is common in many ASL signs)
     distance = ((thumb_tip_x - index_base_x)**2 + (thumb_tip_y - index_base_y)**2)**0.5
     if distance < 50:  # Threshold in pixels
         cv2.line(frame, (thumb_tip_x, thumb_tip_y), (index_base_x, index_base_y), 
                 (0, 255, 0), 2)
     
-    # Draw a hand orientation indicator
     wrist = hand_landmarks.landmark[0]
     middle_mcp = hand_landmarks.landmark[9]
     
     wrist_x, wrist_y = int(wrist.x * w), int(wrist.y * h)
     middle_mcp_x, middle_mcp_y = int(middle_mcp.x * w), int(middle_mcp.y * h)
     
-    # Hand direction vector
     dx = middle_mcp_x - wrist_x
     dy = middle_mcp_y - wrist_y
     
-    # Normalize and scale for arrow
     length = 50
     if (dx**2 + dy**2)**0.5 > 0:
         dx = int(dx / (dx**2 + dy**2)**0.5 * length)
         dy = int(dy / (dx**2 + dy**2)**0.5 * length)
     
-    # Draw arrow for hand orientation
     cv2.arrowedLine(frame, (wrist_x, wrist_y), (wrist_x + dx, wrist_y + dy), 
                    (255, 0, 0), 2)
     
@@ -338,37 +324,49 @@ def generate_frames():
         if not success:
             break
         else:
-            # Process the frame
             processed_frame = process_frame(frame)
             
-            # Add text overlay showing detected letters
             text = ''.join(detected_letters[-20:])  # Show last 20 detected letters
             cv2.putText(processed_frame, text, (10, 30), 
                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
-            # Add mode indicator
             mode_text = f"Mode: {current_mode.capitalize()}"
             cv2.putText(processed_frame, mode_text, (10, frame.shape[0] - 10), 
                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
-            # Encode the frame
             ret, buffer = cv2.imencode('.jpg', processed_frame)
             frame_bytes = buffer.tobytes()
             
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
-# Add this function to app.py after the existing functions
 
 def detect_asl_by_hand_landmarks(hand_landmarks):
     """
-    Comprehensive ASL letter detection based on hand landmarks
+    Enhanced ASL letter detection based on hand landmarks
     Detects all 26 letters of the ASL alphabet plus SPACE and DELETE
+    with improved accuracy using multiple detection methods
     """
-    # Extract coordinates of all hand landmarks
     points = []
+    min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
+    max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
     for landmark in hand_landmarks.landmark:
-        points.append((landmark.x, landmark.y, landmark.z))
+        x, y, z = landmark.x, landmark.y, landmark.z
+        points.append((x, y, z))
+        min_x, max_x = min(min_x, x), max(max_x, x)
+        min_y, max_y = min(min_y, y), max(max_y, y)
+        min_z, max_z = min(min_z, z), max(max_z, z)
+    
+    width_x = max(0.001, max_x - min_x)  # Avoid division by zero
+    width_y = max(0.001, max_y - min_y)
+    width_z = max(0.001, max_z - min_z)
+    
+    norm_points = []
+    for x, y, z in points:
+        norm_x = (x - min_x) / width_x
+        norm_y = (y - min_y) / width_y
+        norm_z = (z - min_z) / width_z
+        norm_points.append((norm_x, norm_y, norm_z))
     
     # Key landmark indices
     WRIST = 0
@@ -393,280 +391,314 @@ def detect_asl_by_hand_landmarks(hand_landmarks):
     PINKY_DIP = 19
     PINKY_TIP = 20
     
-    # Helper functions
-    def distance(p1_idx, p2_idx):
+    def distance(p1_idx, p2_idx, normalized=True):
         """Calculate Euclidean distance between two landmarks"""
-        p1 = points[p1_idx]
-        p2 = points[p2_idx]
+        p_list = norm_points if normalized else points
+        p1 = p_list[p1_idx]
+        p2 = p_list[p2_idx]
         return ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2 + (p1[2]-p2[2])**2)**0.5
     
-    def is_finger_extended(tip_idx, pip_idx, mcp_idx, threshold=0.09):
-        """Check if a finger is extended (tip is far from base)"""
-        # Measure ratio of distances to account for different hand sizes
-        tip_to_pip = distance(tip_idx, pip_idx)
-        pip_to_mcp = distance(pip_idx, mcp_idx)
-        mcp_to_wrist = distance(mcp_idx, WRIST)
+    def angle_between(p1_idx, p2_idx, p3_idx):
+        """Calculate angle between three points with p2 as the vertex"""
+        p1 = norm_points[p1_idx]
+        p2 = norm_points[p2_idx]
+        p3 = norm_points[p3_idx]
         
-        # A finger is extended if the tip is far from the PIP joint
-        # relative to the distance from PIP to MCP
-        return tip_to_pip > threshold * mcp_to_wrist
+        v1 = (p1[0]-p2[0], p1[1]-p2[1], p1[2]-p2[2])
+        v2 = (p3[0]-p2[0], p3[1]-p2[1], p3[2]-p2[2])
+        
+        dot_product = v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]
+        
+        mag1 = (v1[0]**2 + v1[1]**2 + v1[2]**2)**0.5
+        mag2 = (v2[0]**2 + v2[1]**2 + v2[2]**2)**0.5
+        
+        if mag1 * mag2 == 0:
+            return 0
+        
+        cos_angle = max(-1.0, min(1.0, dot_product / (mag1 * mag2)))
+        angle_rad = np.arccos(cos_angle)
+        angle_deg = angle_rad * 180 / np.pi
+        return angle_deg
     
-    def is_thumb_extended(threshold=0.08):
-        """Check if thumb is extended (special case)"""
-        thumb_tip_to_ip = distance(THUMB_TIP, THUMB_IP)
-        ip_to_mcp = distance(THUMB_IP, THUMB_MCP)
-        mcp_to_cmc = distance(THUMB_MCP, THUMB_CMC)
-        
-        return thumb_tip_to_ip > threshold * (ip_to_mcp + mcp_to_cmc)
-    
-    def is_finger_curled(tip_idx, mcp_idx, threshold=0.1):
-        """Check if a finger is curled inward"""
-        tip = points[tip_idx]
-        mcp = points[mcp_idx]
-        wrist = points[WRIST]
-        
-        # Check if the tip is closer to the wrist than the MCP joint
-        tip_to_wrist = ((tip[0]-wrist[0])**2 + (tip[1]-wrist[1])**2)**0.5
-        mcp_to_wrist = ((mcp[0]-wrist[0])**2 + (mcp[1]-wrist[1])**2)**0.5
-        
-        return tip_to_wrist < mcp_to_wrist - threshold
-    
-    def is_finger_bent(tip_idx, pip_idx, mcp_idx, threshold=0.05):
-        """Check if a finger is bent (not straight)"""
-        tip = points[tip_idx]
-        pip = points[pip_idx]
-        mcp = points[mcp_idx]
-        
-        # Calculate the angle between the joints
-        vec1 = [pip[0]-mcp[0], pip[1]-mcp[1]]
-        vec2 = [tip[0]-pip[0], tip[1]-pip[1]]
-        
-        # Normalize vectors
-        vec1_norm = (vec1[0]**2 + vec1[1]**2)**0.5
-        vec2_norm = (vec2[0]**2 + vec2[1]**2)**0.5
-        
-        if vec1_norm == 0 or vec2_norm == 0:
+    def is_finger_extended(tip_idx, pip_idx, mcp_idx, threshold=0.4):
+        """Check if a finger is extended using both distance and angle"""
+        tip_to_mcp_dist = distance(tip_idx, mcp_idx)
+        if tip_to_mcp_dist < threshold:
             return False
         
-        # Calculate dot product
-        dot_product = (vec1[0]*vec2[0] + vec1[1]*vec2[1]) / (vec1_norm * vec2_norm)
-        dot_product = max(-1, min(1, dot_product))  # Ensure within valid range
-        
-        # Convert to angle
-        angle = np.arccos(dot_product) * 180 / np.pi
-        
-        return angle > threshold
+        angle = angle_between(tip_idx, pip_idx, mcp_idx)
+        return angle > 160
     
-    def are_fingers_touching(tip1_idx, tip2_idx, threshold=0.05):
-        """Check if two fingertips are touching"""
+    def is_finger_bent(tip_idx, pip_idx, mcp_idx):
+        """Check if a finger is bent (not straight)"""
+        angle = angle_between(tip_idx, pip_idx, mcp_idx)
+        return angle < 160
+    
+    def is_finger_curled(tip_idx, mcp_idx):
+        """Check if a finger is curled toward palm"""
+        tip_to_wrist = distance(tip_idx, WRIST)
+        mcp_to_wrist = distance(mcp_idx, WRIST)
+        
+        return tip_to_wrist < mcp_to_wrist
+    
+    def is_thumb_extended():
+        """Specific check for thumb extension"""
+        angle = angle_between(THUMB_TIP, THUMB_IP, THUMB_MCP)
+        
+        tip_to_cmc_dist = distance(THUMB_TIP, THUMB_CMC)
+        
+        return angle > 150 and tip_to_cmc_dist > 0.3
+    
+    def are_fingers_touching(tip1_idx, tip2_idx, threshold=0.15):
+        """Check if two fingertips are close to each other"""
         return distance(tip1_idx, tip2_idx) < threshold
     
-    def fingertip_y_position(tip_idx, reference_idx):
-        """Get relative Y position of fingertip compared to reference point"""
-        return points[tip_idx][1] - points[reference_idx][1]
+    def is_palm_facing_camera():
+        """Determine if palm is facing the camera based on z-coordinates"""
+        palm_z = sum(points[i][2] for i in [0, 1, 5, 9, 13, 17]) / 6
+        fingertips_z = sum(points[i][2] for i in [4, 8, 12, 16, 20]) / 5
+        
+        return fingertips_z < palm_z
     
-    def fingertip_x_position(tip_idx, reference_idx):
-        """Get relative X position of fingertip compared to reference point"""
-        return points[tip_idx][0] - points[reference_idx][0]
+    def hand_orientation():
+        """Determine hand orientation (vertical/horizontal)"""
+        wrist = norm_points[WRIST]
+        middle_mcp = norm_points[MIDDLE_MCP]
+        
+        v_hand = (middle_mcp[0]-wrist[0], middle_mcp[1]-wrist[1], 0)
+        v_vert = (0, 1, 0)
+        
+        dot_product = v_hand[1]  # dot product with (0,1,0) is just y component
+        mag_hand = (v_hand[0]**2 + v_hand[1]**2)**0.5
+        
+        if mag_hand == 0:
+            return "unknown"
+        
+        cos_angle = dot_product / mag_hand
+        angle_deg = np.arccos(max(-1.0, min(1.0, cos_angle))) * 180 / np.pi
+        
+        # Classify orientation
+        if angle_deg < 30:
+            return "up"
+        elif angle_deg > 150:
+            return "down"
+        else:
+            # Check if pointing left or right
+            if middle_mcp[0] > wrist[0]:
+                return "right"
+            else:
+                return "left"
     
-    # Check finger states
     thumb_extended = is_thumb_extended()
     index_extended = is_finger_extended(INDEX_TIP, INDEX_PIP, INDEX_MCP)
     middle_extended = is_finger_extended(MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
     ring_extended = is_finger_extended(RING_TIP, RING_PIP, RING_MCP)
     pinky_extended = is_finger_extended(PINKY_TIP, PINKY_PIP, PINKY_MCP)
     
-    # Additional states
+    index_bent = is_finger_bent(INDEX_TIP, INDEX_PIP, INDEX_MCP) and not is_finger_curled(INDEX_TIP, INDEX_MCP)
+    middle_bent = is_finger_bent(MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP) and not is_finger_curled(MIDDLE_TIP, MIDDLE_MCP)
+    ring_bent = is_finger_bent(RING_TIP, RING_PIP, RING_MCP) and not is_finger_curled(RING_TIP, RING_MCP)
+    pinky_bent = is_finger_bent(PINKY_TIP, PINKY_PIP, PINKY_MCP) and not is_finger_curled(PINKY_TIP, PINKY_MCP)
+    
     index_curled = is_finger_curled(INDEX_TIP, INDEX_MCP)
     middle_curled = is_finger_curled(MIDDLE_TIP, MIDDLE_MCP)
     ring_curled = is_finger_curled(RING_TIP, RING_MCP)
     pinky_curled = is_finger_curled(PINKY_TIP, PINKY_MCP)
     
-    index_bent = is_finger_bent(INDEX_TIP, INDEX_PIP, INDEX_MCP)
-    middle_bent = is_finger_bent(MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
-    ring_bent = is_finger_bent(RING_TIP, RING_PIP, RING_MCP)
-    pinky_bent = is_finger_bent(PINKY_TIP, PINKY_PIP, PINKY_MCP)
+    # Get additional hand configuration information
+    palm_facing = is_palm_facing_camera()
+    orientation = hand_orientation()
     
-    # Check fingertip positions
-    index_y = fingertip_y_position(INDEX_TIP, WRIST)
-    middle_y = fingertip_y_position(MIDDLE_TIP, WRIST)
-    ring_y = fingertip_y_position(RING_TIP, WRIST)
-    pinky_y = fingertip_y_position(PINKY_TIP, WRIST)
-    thumb_y = fingertip_y_position(THUMB_TIP, WRIST)
+    # Additional spatial relationships between fingers
+    thumb_index_touching = are_fingers_touching(THUMB_TIP, INDEX_TIP)
+    thumb_middle_touching = are_fingers_touching(THUMB_TIP, MIDDLE_TIP)
+    index_middle_touching = are_fingers_touching(INDEX_TIP, MIDDLE_TIP)
+    middle_ring_touching = are_fingers_touching(MIDDLE_TIP, RING_TIP)
+    ring_pinky_touching = are_fingers_touching(RING_TIP, PINKY_TIP)
     
-    # Check fingertip relationships
-    thumb_to_index = distance(THUMB_TIP, INDEX_TIP)
-    thumb_to_middle = distance(THUMB_TIP, MIDDLE_TIP)
-    index_to_middle = distance(INDEX_TIP, MIDDLE_TIP)
-    middle_to_ring = distance(MIDDLE_TIP, RING_TIP)
-    ring_to_pinky = distance(RING_TIP, PINKY_TIP)
+    # Distance between fingertips - useful for many signs
+    index_middle_dist = distance(INDEX_TIP, MIDDLE_TIP)
+    middle_ring_dist = distance(MIDDLE_TIP, RING_TIP)
+    ring_pinky_dist = distance(RING_TIP, PINKY_TIP)
     
-    # ASL Letter detection rules
+    # Check if thumb crosses palm (important for many ASL letters)
+    thumb_crosses_palm = (norm_points[THUMB_TIP][0] > norm_points[INDEX_MCP][0]) if palm_facing else False
+    
+    # Check thumb position relative to other fingers
+    thumb_below_fingers = norm_points[THUMB_TIP][1] > norm_points[INDEX_MCP][1]
+    
+    # Special configurations
+    thumb_between_index_middle = (
+        distance(THUMB_TIP, INDEX_MCP) < 0.2 and
+        distance(THUMB_TIP, MIDDLE_MCP) < 0.2
+    )
+    
+    # ASL Letter detection logic with comprehensive rules
     
     # A - Fist with thumb at side
     if (not index_extended and not middle_extended and not ring_extended and 
-        not pinky_extended and thumb_extended):
+        not pinky_extended and thumb_extended and not thumb_crosses_palm):
         return "A"
         
     # B - Fingers extended and together, thumb across palm
     elif (index_extended and middle_extended and ring_extended and pinky_extended and
-          not thumb_extended and index_to_middle < 0.05 and middle_to_ring < 0.05 and
-          ring_to_pinky < 0.05):
+          not thumb_extended and index_middle_dist < 0.15 and middle_ring_dist < 0.15 and
+          ring_pinky_dist < 0.15 and palm_facing):
         return "B"
         
-    # C - Curved hand, fingers together
+    # C - Curved hand shape, all fingers bent in same direction
     elif (not index_extended and not middle_extended and not ring_extended and 
           not pinky_extended and not thumb_extended and
-          index_bent and middle_bent and ring_bent and pinky_bent and
-          thumb_to_index < 0.15):
+          index_bent and middle_bent and ring_bent and pinky_bent and 
+          palm_facing and orientation != "down"):
         return "C"
         
-    # D - Index up, others curved, thumb touches middle
+    # D - Index extended, others curled, thumb touches middle finger
     elif (index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and thumb_to_middle < 0.08):
+          not pinky_extended and distance(THUMB_TIP, MIDDLE_PIP) < 0.2):
         return "D"
         
     # E - Fingers curled in, thumb across fingers
-    elif (not index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and not thumb_extended and
-          index_curled and middle_curled and ring_curled and pinky_curled):
+    elif (index_curled and middle_curled and ring_curled and pinky_curled and
+          thumb_crosses_palm and palm_facing):
         return "E"
         
     # F - Thumb and index touching, other fingers extended
-    elif (are_fingers_touching(THUMB_TIP, INDEX_TIP) and
+    elif (thumb_index_touching and not index_extended and 
           middle_extended and ring_extended and pinky_extended):
         return "F"
         
-    # G - Thumb and index pointing out horizontally, others curled
-    elif (index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and thumb_extended and
-          abs(index_y) < 0.05 and abs(thumb_y) < 0.05):
+    # G - Thumb and index pointing horizontally, index bent, others curled
+    elif (thumb_extended and index_bent and not middle_extended and 
+          not ring_extended and not pinky_extended and 
+          orientation in ["right", "left"]):
         return "G"
         
-    # H - Index and middle extended together, others curled
+    # H - Index and middle extended and parallel, others curled
     elif (index_extended and middle_extended and not ring_extended and 
-          not pinky_extended and index_to_middle < 0.05):
+          not pinky_extended and index_middle_dist < 0.15 and
+          orientation in ["right", "left"]):
         return "H"
         
-    # I - Pinky extended, others curled
+    # I - Pinky extended, others curled, palm facing side
     elif (not index_extended and not middle_extended and not ring_extended and 
-          pinky_extended):
+          pinky_extended and not palm_facing):
         return "I"
         
-    # J - Like I but with motion (simplified as pinky extended and bent)
+    # J - Like I but with motion (simplified as pinky extended with palm facing side and curved)
     elif (not index_extended and not middle_extended and not ring_extended and 
-          pinky_extended and pinky_bent):
+          pinky_bent and not palm_facing and distance(PINKY_TIP, WRIST) > 0.35):
         return "J"
         
-    # K - Index and middle extended in V shape, thumb touches middle joint
+    # K - Index and middle extended in V shape, palm facing side
     elif (index_extended and middle_extended and not ring_extended and 
-          not pinky_extended and index_to_middle > 0.1):
+          not pinky_extended and index_middle_dist > 0.25 and
+          not palm_facing and orientation in ["up", "left", "right"]):
         return "K"
         
-    # L - L shape with thumb and index
+    # L - L shape with thumb and index extended at 90°
     elif (index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and thumb_extended and
-          thumb_to_index > 0.15 and 
-          abs(fingertip_y_position(INDEX_TIP, INDEX_MCP)) < -0.1):
+          not pinky_extended and thumb_extended and distance(THUMB_TIP, INDEX_TIP) > 0.35 and
+          orientation in ["up", "right"]):
         return "L"
         
     # M - Thumb between ring and pinky, fingers folded
     elif (not index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and thumb_extended and
-          are_fingers_touching(THUMB_TIP, RING_MCP)):
+          not pinky_extended and index_curled and middle_curled and ring_curled and 
+          distance(THUMB_TIP, RING_MCP) < 0.15):
         return "M"
         
     # N - Thumb between middle and ring, fingers folded
     elif (not index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and thumb_extended and
-          are_fingers_touching(THUMB_TIP, MIDDLE_MCP)):
+          not pinky_extended and index_curled and middle_curled and 
+          distance(THUMB_TIP, MIDDLE_MCP) < 0.15):
         return "N"
         
     # O - Fingertips form circle with thumb
     elif (not index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and
-          are_fingers_touching(THUMB_TIP, INDEX_TIP)):
+          not pinky_extended and thumb_index_touching and 
+          index_bent and middle_bent and ring_bent and pinky_bent):
         return "O"
         
-    # P - Thumb between index and middle, index pointing
+    # P - Thumb between index and middle, index pointing down
     elif (index_extended and not middle_extended and not ring_extended and 
           not pinky_extended and thumb_extended and
-          fingertip_x_position(THUMB_TIP, INDEX_MCP) < 0):
+          thumb_between_index_middle and orientation == "down"):
         return "P"
         
     # Q - Thumb and index pointing down
     elif (index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and thumb_extended and
-          index_y > 0.1 and thumb_y > 0.1):
+          not pinky_extended and thumb_extended and orientation == "down"):
         return "Q"
         
     # R - Index and middle crossed
     elif (index_extended and middle_extended and not ring_extended and 
-          not pinky_extended and
-          index_to_middle < 0.05 and
-          fingertip_x_position(INDEX_TIP, MIDDLE_TIP) < -0.03):
+          not pinky_extended and index_middle_touching and
+          norm_points[INDEX_TIP][0] < norm_points[MIDDLE_TIP][0]):
         return "R"
         
-    # S - Fist with thumb in front of fingers
-    elif (not index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and thumb_extended and
-          fingertip_x_position(THUMB_TIP, INDEX_PIP) < -0.05):
+    # S - Fist with thumb across fingers
+    elif (index_curled and middle_curled and ring_curled and pinky_curled and
+          thumb_crosses_palm and not thumb_extended):
         return "S"
         
-    # T - Thumb between index and middle
+    # T - Thumb between index and middle (but not pointing down like P)
     elif (not index_extended and not middle_extended and not ring_extended and 
           not pinky_extended and thumb_extended and
-          are_fingers_touching(THUMB_TIP, INDEX_MCP)):
+          thumb_between_index_middle and orientation != "down"):
         return "T"
         
-    # U - Index and middle extended together
+    # U - Index and middle extended parallel
     elif (index_extended and middle_extended and not ring_extended and 
-          not pinky_extended and index_to_middle < 0.05):
+          not pinky_extended and index_middle_dist < 0.2 and
+          orientation == "up"):
         return "U"
         
     # V - Index and middle extended in V shape
     elif (index_extended and middle_extended and not ring_extended and 
-          not pinky_extended and index_to_middle > 0.1):
+          not pinky_extended and index_middle_dist > 0.25 and
+          norm_points[INDEX_TIP][1] < norm_points[INDEX_PIP][1] and
+          norm_points[MIDDLE_TIP][1] < norm_points[MIDDLE_PIP][1]):
         return "V"
         
     # W - Index, middle and ring extended in spread pattern
     elif (index_extended and middle_extended and ring_extended and 
           not pinky_extended and 
-          index_to_middle > 0.05 and middle_to_ring > 0.05):
+          index_middle_dist > 0.2 and middle_ring_dist > 0.2):
         return "W"
         
     # X - Index bent with thumb at side
     elif (not index_extended and not middle_extended and not ring_extended and 
           not pinky_extended and thumb_extended and
-          index_bent):
+          index_bent and not index_extended):
         return "X"
         
     # Y - Thumb and pinky extended only
     elif (not index_extended and not middle_extended and not ring_extended and 
-          pinky_extended and thumb_extended):
+          pinky_extended and thumb_extended and
+          distance(THUMB_TIP, PINKY_TIP) > 0.4):
         return "Y"
         
-    # Z - Index tracing Z shape (simplified as index extended pointing horizontally)
+    # Z - Index pointing forward with palm down (simplified as index extended horizontally)
     elif (index_extended and not middle_extended and not ring_extended and 
-          not pinky_extended and
-          abs(index_y) < 0.05):
+          not pinky_extended and orientation in ["left", "right"] and
+          not palm_facing):
         return "Z"
     
     # SPACE - Open palm with fingers spread
     elif (index_extended and middle_extended and ring_extended and pinky_extended and
-          thumb_extended and index_to_middle > 0.07 and middle_to_ring > 0.07 and
-          ring_to_pinky > 0.07):
+          thumb_extended and index_middle_dist > 0.15 and middle_ring_dist > 0.15 and
+          ring_pinky_dist > 0.15 and palm_facing):
         return "SPACE"
         
     # DELETE - Closed fist with thumb pointing down
     elif (not index_extended and not middle_extended and not ring_extended and
           not pinky_extended and thumb_extended and
-          thumb_y > 0.1):
+          orientation == "down" and thumb_below_fingers):
         return "DELETE"
     
-    # Return None if no confident match
+    # Confidence check - if we are here, we didn't match any letter strongly
     return None
-
 def fully_extended(tip, base, threshold=0.15):
     """Check if a finger is fully extended"""
     return distance(tip, base) > threshold
