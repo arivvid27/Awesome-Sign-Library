@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASL Translator | SDG 10: Reduced Inequalities</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ASL Translator</h1>
+            <p>Supporting UN SDG 10: Reduced Inequalities</p>
+        </header>
+
+        <div class="main-content">
+            <div class="video-container">
+                <img src="{{ url_for('video_feed') }}" alt="ASL Detection Video Feed">
+                <div class="detection-info">
+                    <div class="current-letter">
+                        <h3>Current Letter</h3>
+                        <div id="detected-letter">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button id="add-letter-btn" class="btn primary">Add Letter</button>
+                <button id="space-btn" class="btn">Add Space</button>
+                <button id="clear-btn" class="btn danger">Clear</button>
+                <button id="process-btn" class="btn success">Process to Words</button>
+            </div>
+
+            <div class="text-output">
+                <div class="output-section">
+                    <h3>Letter Buffer</h3>
+                    <div id="letter-buffer" class="output-content"></div>
+                </div>
+
+                <div class="output-section">
+                    <h3>Processed Text</h3>
+                    <div id="processed-text" class="output-content"></div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>ASL Translator © 2025 | Powered by OpenCV and Google Gemini AI</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
